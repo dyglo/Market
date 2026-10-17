@@ -65,7 +65,7 @@ function MarketRow({ q, rank }: { q: Quote; rank: number }) {
         </div>
         <span className="instrument-name">{q.name}</span>
       </div>
-      <span className="price led">
+      <span className="price led" key={q.price}>
         {money(q)}
         <span
           className={`tick-direction ${q.tick < 0 ? "negative" : "positive"}`}

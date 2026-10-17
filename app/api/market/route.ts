@@ -24,7 +24,10 @@ async function prices(request: NextRequest, manual: boolean) {
         { status: 413, headers },
       );
     try {
-      input = await request.json();
+      const body = await request.json();
+      if (!body || typeof body !== "object" || Array.isArray(body))
+        throw new Error("Invalid settings");
+      input = body;
     } catch {
       return NextResponse.json(
         { error: "Invalid connection settings." },
@@ -103,6 +106,8 @@ async function prices(request: NextRequest, manual: boolean) {
         );
         if (!p?.bids?.length || !p?.asks?.length) return null;
         const price = (Number(p.bids[0].price) + Number(p.asks[0].price)) / 2;
+        if (!Number.isFinite(price) || price <= 0)
+          throw new Error("OANDA returned an invalid price.");
         const key = `${environment}:${q.symbol}`,
           cached = opens.get(key);
         let open = cached?.open;
@@ -134,6 +139,10 @@ async function prices(request: NextRequest, manual: boolean) {
         };
       }),
     );
+    if (!quotes.some(Boolean))
+      throw new Error(
+        "No prices are currently available for these instruments.",
+      );
     return NextResponse.json(
       {
         quotes: quotes.filter(Boolean),
