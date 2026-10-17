@@ -144,6 +144,8 @@ async function prices(request: NextRequest, manual: boolean) {
           ...q,
           price,
           previousClose: reference.close,
+          // Compatibility for already-open tabs using the former field name.
+          open: reference.close,
           priceTime: p.time,
           previousSessionStart: reference.previousSessionStart,
           history: Array(32).fill(price),
