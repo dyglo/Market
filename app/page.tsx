@@ -1,20 +1,13 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  Activity,
-  ArrowDown,
   ArrowDownRight,
-  ArrowUp,
   ArrowUpRight,
   Check,
-  ChevronDown,
   Expand,
-  Globe2,
   LockKeyhole,
-  Radio,
   Settings2,
   ShieldCheck,
-  SlidersHorizontal,
   Unplug,
   X,
 } from "lucide-react";
@@ -31,23 +24,7 @@ type Credentials = {
   token: string;
   environment: "practice" | "live";
 };
-type Mode = "simulation" | "oanda" | "reconnecting";
-function Sparkline({ quote }: { quote: Quote }) {
-  const h = quote.history,
-    min = Math.min(...h),
-    range = Math.max(...h) - min || 1;
-  return (
-    <svg className="spark" viewBox="0 0 100 30" aria-label="Recent price trend">
-      <path
-        d={`M ${h.map((v, i) => `${(i * 100) / (h.length - 1)},${26 - ((v - min) / range) * 22}`).join(" L ")}`}
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        vectorEffect="non-scaling-stroke"
-      />
-    </svg>
-  );
-}
+type Mode = "connecting" | "simulation" | "oanda" | "reconnecting";
 function MarketRow({ q, rank }: { q: Quote; rank: number }) {
   const positive = change(q) >= 0;
   return (
@@ -78,17 +55,13 @@ function MarketRow({ q, rank }: { q: Quote; rank: number }) {
         {change(q).toFixed(2)}
         <small>%</small>
       </span>
-      <div className={positive ? "positive trend" : "negative trend"}>
-        <Sparkline quote={q} />
-      </div>
     </div>
   );
 }
 export default function Board() {
-  const [quotes, setQuotes] = useState(INITIAL),
+  const [quotes, setQuotes] = useState<Quote[]>([]),
     [filter, setFilter] = useState<Category | "ALL">("ALL"),
-    [mode, setMode] = useState<Mode>("simulation"),
-    [time, setTime] = useState<Date | null>(null),
+    [mode, setMode] = useState<Mode>("connecting"),
     [lastTick, setLastTick] = useState<Date | null>(null),
     [modal, setModal] = useState(false),
     [fullscreen, setFullscreen] = useState(false),
@@ -103,9 +76,12 @@ export default function Board() {
     connected = useRef(false),
     dialog = useRef<HTMLDialogElement>(null),
     opener = useRef<HTMLButtonElement>(null),
-    requestId = useRef(0);
+    requestId = useRef(0),
+    serverEnabled = useRef(true),
+    simulating = useRef(false);
   const applyQuotes = useCallback(
     (data: { quotes: Quote[]; environment: string }) => {
+      simulating.current = false;
       const wasConnected = connected.current;
       setQuotes((prev) =>
         data.quotes.map((q) => {
@@ -135,25 +111,56 @@ export default function Board() {
       signal: AbortSignal.timeout(20000),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Unable to connect to OANDA.");
+    if (!res.ok)
+      throw Object.assign(
+        new Error(data.error || "Unable to connect to OANDA."),
+        { code: data.code },
+      );
     return data;
   }, []);
   useEffect(() => {
     let active = true;
-    const id = requestId.current;
-    fetchPrices(null)
-      .then((data) => {
-        if (active && id === requestId.current) applyQuotes(data);
-      })
-      .catch(() => {});
+    let retry: ReturnType<typeof setTimeout>;
+    const attempt = async () => {
+      if (!serverEnabled.current || connected.current) return;
+      const id = requestId.current;
+      try {
+        const data = await fetchPrices(null);
+        if (active && id === requestId.current && serverEnabled.current) {
+          applyQuotes(data);
+          setError("");
+        }
+      } catch (failure) {
+        if (!active || id !== requestId.current || !serverEnabled.current)
+          return;
+        if ((failure as { code?: string }).code === "NOT_CONFIGURED") {
+          if (!simulating.current) setQuotes(INITIAL);
+          simulating.current = true;
+          setMode("simulation");
+          setError("");
+        } else {
+          simulating.current = false;
+          setQuotes([]);
+          setMode("reconnecting");
+          setError(
+            failure instanceof Error
+              ? failure.message
+              : "OANDA connection failed. Retrying automatically.",
+          );
+        }
+      }
+      if (active && !connected.current && serverEnabled.current)
+        retry = setTimeout(attempt, 15000);
+    };
+    attempt();
     return () => {
       active = false;
+      clearTimeout(retry);
     };
   }, [fetchPrices, applyQuotes]);
   useEffect(() => {
     const timer = setInterval(() => {
-      setTime(new Date());
-      if (!connected.current) {
+      if (simulating.current) {
         setQuotes((prev) =>
           prev.map((q) => {
             if (Math.random() > 0.55) return { ...q, tick: 0 };
@@ -172,7 +179,7 @@ export default function Board() {
     return () => clearInterval(timer);
   }, []);
   useEffect(() => {
-    if (mode === "simulation") return;
+    if (!connected.current) return;
     let active = true;
     let pending = false;
     const timer = setInterval(async () => {
@@ -259,6 +266,7 @@ export default function Board() {
       };
       const data = await fetchPrices(c);
       if (id !== requestId.current) return;
+      serverEnabled.current = false;
       credentials.current = c;
       applyQuotes(data);
       setToken("");
@@ -271,6 +279,8 @@ export default function Board() {
   };
   const simulate = () => {
     requestId.current++;
+    serverEnabled.current = false;
+    simulating.current = true;
     credentials.current = null;
     connected.current = false;
     setMode("simulation");
@@ -287,116 +297,18 @@ export default function Board() {
     losers = visible
       .filter((q) => change(q) < 0)
       .sort((a, b) => change(a) - change(b));
-  const avg = visible.length
-    ? visible.reduce((v, q) => v + change(q), 0) / visible.length
-    : 0;
+  const marketClosed =
+    quotes.length > 0 && quotes.every((q) => q.tradeable === false);
+  const feedStatus =
+    mode === "simulation"
+      ? "SIMULATED"
+      : mode === "connecting"
+        ? "CONNECTING TO OANDA"
+        : mode === "reconnecting"
+          ? "OANDA · RECONNECTING"
+          : `OANDA · ${sourceEnvironment.toUpperCase()}${marketClosed ? " · MARKET CLOSED" : ""}`;
   return (
     <main className={`terminal ${idle && !modal ? "cursor-hidden" : ""}`}>
-      <header className="terminal-bar">
-        <a className="brand" href="/" aria-label="Ticker market board">
-          <span className="brand-icon">
-            <Activity size={19} />
-          </span>
-          TICKER
-          <span className="brand-divider" />
-          <span className="brand-sub">GLOBAL MARKET BOARD</span>
-        </a>
-        <div className="terminal-tools">
-          <span
-            className={`feed-badge ${mode === "reconnecting" ? "warning" : ""}`}
-          >
-            <i />
-            {mode === "simulation"
-              ? "SIMULATED FEED"
-              : mode === "reconnecting"
-                ? "RECONNECTING"
-                : `OANDA ${sourceEnvironment.toUpperCase()}`}
-          </span>
-          <span className="tool-divider" />
-          <button
-            onClick={toggleFullscreen}
-            title="Toggle fullscreen (F)"
-            aria-label="Toggle fullscreen"
-          >
-            <Expand size={16} />
-            <span className="keycap">F</span>
-          </button>
-          <button
-            ref={opener}
-            onClick={() => {
-              setError("");
-              setModal(true);
-            }}
-            title="Settings (S)"
-            aria-label="Open settings"
-          >
-            <Settings2 size={17} />
-          </button>
-        </div>
-      </header>
-      <section className="board-heading">
-        <div className="heading-left">
-          <div className="eyebrow">
-            <span className="tiny-cross">+</span> THE WORLD, AT A GLANCE
-          </div>
-          <h1>
-            Every tick. <span>Every opportunity.</span>
-          </h1>
-          <p>Forex, precious metals & energy. One uninterrupted view.</p>
-        </div>
-        <div className="clock">
-          <div>
-            <Globe2 size={12} /> UNIVERSAL TIME
-          </div>
-          <time>
-            {time
-              ? time.toLocaleTimeString("en-GB", { timeZone: "UTC" })
-              : "--:--:--"}
-            <small>UTC</small>
-          </time>
-          <span>
-            {time
-              ? time
-                  .toLocaleDateString("en-GB", {
-                    weekday: "long",
-                    day: "2-digit",
-                    month: "short",
-                    year: "numeric",
-                    timeZone: "UTC",
-                  })
-                  .toUpperCase()
-              : "GLOBAL MARKETS · 24 / 5"}
-          </span>
-        </div>
-      </section>
-      <section className="board-controls" aria-label="Market filters">
-        <div className="filters">
-          {(["ALL", "FX", "GOLD", "OIL"] as const).map((f) => (
-            <button
-              key={f}
-              className={filter === f ? "active" : ""}
-              onClick={() => setFilter(f)}
-            >
-              {f === "ALL"
-                ? "All markets"
-                : f === "FX"
-                  ? "Forex"
-                  : f === "GOLD"
-                    ? "Gold"
-                    : "Crude oil"}
-              <span>
-                {f === "ALL"
-                  ? quotes.length
-                  : quotes.filter((q) => q.category === f).length}
-              </span>
-            </button>
-          ))}
-        </div>
-        <div className="sort-note">
-          <SlidersHorizontal size={12} /> SORTED BY DAILY CHANGE{" "}
-          <ChevronDown size={12} />
-        </div>
-      </section>
       {error && !modal && (
         <div className="feed-error" role="status">
           {error}
@@ -423,16 +335,12 @@ export default function Board() {
                   {String(side.data.length).padStart(2, "0")}
                 </span>
               </div>
-              <span>
-                {side.positive ? "LEADING THE MARKET" : "UNDER PRESSURE"}
-              </span>
             </div>
             <div className="column-labels">
               <span>#</span>
               <span>INSTRUMENT</span>
               <span>LAST PRICE</span>
               <span>CHANGE %</span>
-              <span className="trend-label">TREND</span>
             </div>
             <div className="rows">
               {side.data.length ? (
@@ -441,122 +349,45 @@ export default function Board() {
                 ))
               ) : (
                 <div className="empty-state">
-                  No {side.title.toLowerCase()} in this category.
+                  {mode === "connecting"
+                    ? "Connecting to OANDA…"
+                    : mode === "reconnecting" && !quotes.length
+                      ? "Waiting for OANDA prices…"
+                      : `No ${side.title.toLowerCase()} in this category.`}
                 </div>
               )}
-            </div>
-            <div className="side-bottom">
-              <span>
-                {side.positive ? (
-                  <ArrowUp size={12} />
-                ) : (
-                  <ArrowDown size={12} />
-                )}{" "}
-                {side.data.length} INSTRUMENTS{" "}
-                {side.positive ? "ADVANCING" : "DECLINING"}
-              </span>
-              <span>{side.positive ? "HIGH → LOW" : "LOW → HIGH"}</span>
             </div>
           </div>
         ))}
       </section>
-      <section className="market-summary">
-        <div className="summary-title">
-          <Activity size={17} />
-          <span>
-            MARKET
-            <br />
-            <b>PULSE</b>
-          </span>
-        </div>
-        <div className="breadth">
-          <div>
-            <span>MARKET BREADTH</span>
-            <b>
-              <em className="positive">{gainers.length} advancing</em>
-              <i>/</i>
-              <em className="negative">{losers.length} declining</em>
-            </b>
-          </div>
-          <div className="breadth-bar">
-            <span
-              style={{
-                width: `${visible.length ? (gainers.length / visible.length) * 100 : 50}%`,
-              }}
-            />
-          </div>
-        </div>
-        <div className="summary-stat">
-          <span>AVERAGE CHANGE</span>
-          <b className={`led ${avg >= 0 ? "positive" : "negative"}`}>
-            {avg >= 0 ? "+" : ""}
-            {avg.toFixed(2)}
-            <small>%</small>
-          </b>
-        </div>
-        <div className="summary-stat leader">
-          <span>TOP MOVER</span>
-          {visible.length > 0 && (
-            <b className="led amber">
-              {displaySymbol(
-                [...visible].sort(
-                  (a, b) => Math.abs(change(b)) - Math.abs(change(a)),
-                )[0].symbol,
-              )}
-            </b>
-          )}
-        </div>
-        <div className="session-note">
-          <span className="session-dot" />
-          <div>
-            <b>{mode === "simulation" ? "DEMO SESSION" : "OANDA PRICING"}</b>
-            <span>
-              {mode === "simulation"
-                ? "Realistic ticks. Zero risk."
-                : mode === "reconnecting"
-                  ? "Awaiting feed recovery"
-                  : "Read-only market connection"}
-            </span>
-          </div>
-        </div>
-      </section>
-      <div className="ticker-tape" aria-label="Price ticker">
-        <div>
-          {[...quotes, ...quotes].map((q, i) => (
-            <span className="tape-item" key={`${q.symbol}${i}`}>
-              <b>{displaySymbol(q.symbol).replaceAll(" / ", "/")}</b>
-              <span className="led">{money(q)}</span>
-              <span className={change(q) >= 0 ? "positive" : "negative"}>
-                {change(q) >= 0 ? "▴" : "▾"} {Math.abs(change(q)).toFixed(2)}%
-              </span>
-              <i>✦</i>
-            </span>
-          ))}
-        </div>
+      <div
+        className="kiosk-status"
+        role="status"
+        title={
+          lastTick
+            ? `Last update ${lastTick.toLocaleTimeString("en-GB", { timeZone: "UTC" })} UTC`
+            : undefined
+        }
+      >
+        {feedStatus}
       </div>
-      <footer>
-        <span>
-          <i className="status-dot" />
-          {mode === "simulation"
-            ? "SIMULATED DATA · FOR DISPLAY PURPOSES"
-            : mode === "reconnecting"
-              ? "FEED INTERRUPTED · PRICES MAY BE STALE"
-              : "OANDA DATA · DAILY CHANGE FROM 00:00 UTC"}
-        </span>
-        <span className="footer-center">BUILT FOR THE BIG PICTURE.</span>
-        <span>
-          LAST TICK{" "}
-          <b>
-            {lastTick
-              ? lastTick.toLocaleTimeString("en-GB", { timeZone: "UTC" })
-              : "--:--:--"}
-          </b>
-          <span className="footer-fullscreen">
-            <span className="keycap">F</span> {fullscreen ? "EXIT" : "ENTER"}{" "}
-            FULLSCREEN
-          </span>
-        </span>
-      </footer>
+      <div className={`kiosk-controls ${idle ? "controls-hidden" : ""}`}>
+        <button
+          onClick={toggleFullscreen}
+          title="Fullscreen (F)"
+          aria-label={fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+        >
+          <Expand size={16} />
+        </button>
+        <button
+          ref={opener}
+          onClick={() => setModal(true)}
+          title="Settings (S)"
+          aria-label="Open settings"
+        >
+          <Settings2 size={16} />
+        </button>
+      </div>
       <dialog
         ref={dialog}
         aria-label="OANDA connection settings"
@@ -574,12 +405,26 @@ export default function Board() {
           >
             <X size={20} />
           </button>
-          <div className="modal-icon">
-            <Radio size={22} />
-          </div>
-          <div className="eyebrow">YOUR MARKET CONNECTION</div>
-          <h2>Connect the dots.</h2>
-          <p>Connect your OANDA account for live market prices.</p>
+          <h2>OANDA settings</h2>
+          <p className="connection-status">{feedStatus}</p>
+          {error && (
+            <div className="form-error" role="status">
+              {error}
+            </div>
+          )}
+          <label className="filter-label" htmlFor="market-filter">
+            DISPLAY
+          </label>
+          <select
+            id="market-filter"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value as Category | "ALL")}
+          >
+            <option value="ALL">All markets</option>
+            <option value="FX">Forex</option>
+            <option value="GOLD">Gold</option>
+            <option value="OIL">Crude oil</option>
+          </select>
           <div className="security-note">
             <ShieldCheck size={17} />
             <span>

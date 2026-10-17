@@ -58,6 +58,7 @@ test("unconfigured deployment supports simulation without exposing credentials",
   );
   assert.equal(res.status, 503);
   assert.match(res.headers.get("cache-control"), /no-store/);
+  assert.equal((await res.json()).code, "NOT_CONFIGURED");
 });
 test("malformed credentials and foreign origins are rejected before calling OANDA", async () => {
   const route = api(() => {
@@ -124,4 +125,44 @@ test("upstream authorization failures return a helpful error without token leaka
   const body = await res.text();
   assert.match(body, /rejected these credentials/);
   assert.ok(!body.includes(settings.token));
+});
+
+test("server environment connects to OANDA and preserves closed-market prices", async () => {
+  const route = api(
+    async (url, options) => {
+      assert.equal(options.headers.Authorization, "Bearer server-only-token");
+      assert.ok(url.startsWith("https://api-fxtrade.oanda.com/v3/"));
+      if (url.includes("/candles"))
+        return Response.json({ candles: [{ mid: { o: "4100" } }] });
+      if (url.includes("/pricing?"))
+        return Response.json({
+          prices: [
+            {
+              instrument: "XAU_USD",
+              bids: [{ price: "4165.3" }],
+              asks: [{ price: "4165.5" }],
+              tradeable: false,
+            },
+          ],
+        });
+      return Response.json({ instruments: [{ name: "XAU_USD" }] });
+    },
+    {
+      OANDA_ACCOUNT_ID: "001-001-1234567-001",
+      OANDA_API_TOKEN: "server-only-token",
+      OANDA_ENVIRONMENT: "live",
+    },
+  );
+  const response = await route.GET(
+    new NextRequest("https://ticker.test/api/market"),
+  );
+  assert.equal(response.status, 200);
+  const text = await response.text();
+  assert.ok(!text.includes("server-only-token"));
+  const data = JSON.parse(text);
+  assert.equal(data.environment, "live");
+  assert.equal(data.quotes.length, 1);
+  assert.equal(data.quotes[0].tradeable, false);
+  assert.equal(data.quotes[0].price, 4165.4);
+  assert.equal(data.quotes[0].open, 4100);
 });

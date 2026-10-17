@@ -48,6 +48,7 @@ async function prices(request: NextRequest, manual: boolean) {
   )
     return NextResponse.json(
       {
+        code: manual ? "MISSING_CREDENTIALS" : "NOT_CONFIGURED",
         error: manual
           ? "Enter your account ID and API token."
           : "Server connection is not configured.",
