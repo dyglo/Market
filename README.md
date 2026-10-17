@@ -1,6 +1,6 @@
-# TICKER · Global Market Board
+# TAFOREX · Global Market Board
 
-A Next.js 16 market display for TVs and monitors. A full-width split board ranks gainers and losers by daily percentage change, with FX, gold, Brent and WTI, amber LED prices and tick flashes. The screen contains only the quotation board on black, with a small feed status and controls that hide when idle.
+A Next.js 16 market display for TVs and monitors. A full-screen exchange-style board displays FX, gold, Brent and WTI together in three stable columns. Prices and percentage changes are green or red according to the previous-session change, with momentary tick flashes. The central header shows a New York clock, date, and an EUR/USD intraday area chart from real OANDA five-minute midpoint candles. TAFOREX appears at the top right. A small feed status and fullscreen control remain available.
 
 ## Run
 
@@ -23,7 +23,7 @@ For an unattended display, configure server environment variables in Vercel and 
 - `OANDA_API_TOKEN` (Sensitive)
 - `OANDA_ENVIRONMENT` (`practice` or `live`)
 
-The backend uses read-only OANDA endpoints and never exposes server credentials or account details. The public market endpoint intentionally returns only price data. OANDA instruments vary by jurisdiction and account; unavailable instruments are omitted. Live data polls every 5 seconds; daily change is `(current midpoint / previous session close - 1) * 100`. Daily candles use OANDA’s 17:00 America/New_York session boundary, including daylight saving changes. The baseline is the completed session before the quote’s session, including on weekends when the latest candle is also complete. Quote timestamps and reference-session starts are included in the API for auditing. Baselines cache for at most 60 seconds and invalidate when the quote enters a new trading session. Feed failures retain and label stale prices while reconnecting. When all returned instruments are non-tradeable, the board explicitly shows MARKET CLOSED; these are OANDA quotes, not simulated ticks. No trading endpoints are implemented.
+The backend uses read-only OANDA endpoints and never exposes server credentials or account details. The public market endpoint intentionally returns only price data. OANDA instruments vary by jurisdiction and account; unavailable instruments are omitted. Live data polls every 5 seconds; the central chart refreshes every 60 seconds and includes candles from the latest OANDA trading session only. Chart failures display an unavailable message without generating replacement data. daily change is `(current midpoint / previous session close - 1) * 100`. Daily candles use OANDA’s 17:00 America/New_York session boundary, including daylight saving changes. The baseline is the completed session before the quote’s session, including on weekends when the latest candle is also complete. Quote timestamps and reference-session starts are included in the API for auditing. Baselines cache for at most 60 seconds and invalidate when the quote enters a new trading session. Feed failures retain and label stale prices while reconnecting. When all returned instruments are non-tradeable, the board explicitly shows MARKET CLOSED; these are OANDA quotes, not simulated ticks. No trading endpoints are implemented.
 
 ## Validation
 

@@ -1,34 +1,30 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowDownRight, ArrowUpRight, Expand } from "lucide-react";
+import { Expand } from "lucide-react";
 import { Quote, INITIAL, change, displaySymbol, money } from "@/lib/market";
 type Mode = "connecting" | "simulation" | "oanda" | "reconnecting";
-function MarketRow({ q, rank }: { q: Quote; rank: number }) {
+type ChartPoint = { time: string; price: number };
+function MarketRow({ q }: { q: Quote }) {
   const positive = change(q) >= 0;
   return (
     <div
-      className={`market-row ${q.tick > 0 ? "tick-up" : q.tick < 0 ? "tick-down" : ""}`}
-      key={q.symbol}
+      className={`market-row ${positive ? "positive" : "negative"} ${q.tick > 0 ? "tick-up" : q.tick < 0 ? "tick-down" : ""}`}
     >
-      <span className="rank">{String(rank).padStart(2, "0")}</span>
       <div className="instrument">
-        <div>
-          <span className="symbol">{displaySymbol(q.symbol)}</span>
-          <span className={`category ${q.category.toLowerCase()}`}>
-            {q.category === "OIL" ? "CRUDE OIL" : q.category}
-          </span>
-        </div>
-        <span className="instrument-name">{q.name}</span>
-      </div>
-      <span className="price led" key={q.price}>
-        {money(q)}
-        <span
-          className={`tick-direction ${q.tick < 0 ? "negative" : "positive"}`}
-        >
-          {q.tick < 0 ? "▾" : "▴"}
+        <span className="symbol">
+          {displaySymbol(q.symbol).replaceAll(" / ", "/")}
         </span>
+        <span className="category">
+          {q.category === "OIL" ? "CRUDE OIL" : q.category}
+        </span>
+      </div>
+      <span className="price" key={q.price}>
+        {money(q)}
       </span>
-      <span className={`row-change led ${positive ? "positive" : "negative"}`}>
+      <span
+        className="row-change"
+        title="Change from the previous OANDA session close"
+      >
         {positive ? "+" : ""}
         {change(q).toFixed(2)}
         <small>%</small>
@@ -36,8 +32,117 @@ function MarketRow({ q, rank }: { q: Quote; rank: number }) {
     </div>
   );
 }
+function SessionChart({
+  points,
+  unavailable,
+}: {
+  points: ChartPoint[];
+  unavailable: boolean;
+}) {
+  const prices = points.map((p) => p.price),
+    low = Math.min(...prices),
+    high = Math.max(...prices),
+    padding = (high - low) * 0.15 || 0.0001,
+    min = low - padding,
+    max = high + padding;
+  const line = points
+    .map(
+      (p, i) =>
+        `${(i / Math.max(1, points.length - 1)) * 420},${120 - ((p.price - min) / (max - min)) * 116}`,
+    )
+    .join(" L ");
+  const rising = points.length > 1 && points.at(-1)!.price >= points[0].price;
+  const first = points[0],
+    last = points.at(-1);
+  const label = (p: ChartPoint) =>
+    new Date(p.time).toLocaleTimeString("en-US", {
+      timeZone: "America/New_York",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+  return (
+    <div className={`session-chart ${rising ? "positive" : "negative"}`}>
+      <div className="chart-caption">
+        <span>EUR/USD</span>
+        <span>
+          {unavailable && points.length > 1
+            ? "5 MIN · LAST RECEIVED"
+            : "5 MIN · NEW YORK"}
+        </span>
+      </div>
+      {points.length > 1 ? (
+        <>
+          <div className="chart-plot">
+            <div className="chart-axis">
+              {[max, (max + min) / 2, min].map((v) => (
+                <span key={v}>{v.toFixed(4)}</span>
+              ))}
+            </div>
+            <svg
+              viewBox="0 0 420 124"
+              preserveAspectRatio="none"
+              role="img"
+              aria-label="EUR/USD intraday price chart from OANDA"
+            >
+              <defs>
+                <linearGradient id="chart-fill" x1="0" y1="0" x2="0" y2="1">
+                  <stop
+                    offset="0%"
+                    stopColor="currentColor"
+                    stopOpacity=".58"
+                  />
+                  <stop
+                    offset="100%"
+                    stopColor="currentColor"
+                    stopOpacity=".1"
+                  />
+                </linearGradient>
+              </defs>
+              {[1, 62, 123].map((y) => (
+                <line
+                  key={y}
+                  x1="0"
+                  x2="420"
+                  y1={y}
+                  y2={y}
+                  stroke="#ffffff18"
+                  strokeWidth=".5"
+                />
+              ))}
+              <path
+                d={`M 0,124 L ${line} L 420,124 Z`}
+                fill="url(#chart-fill)"
+              />
+              <path
+                d={`M ${line}`}
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                vectorEffect="non-scaling-stroke"
+              />
+            </svg>
+          </div>
+          <div className="chart-times">
+            <span>{label(first)}</span>
+            <span>{label(last!)}</span>
+          </div>
+        </>
+      ) : (
+        <div className="chart-placeholder">
+          {unavailable
+            ? "Chart temporarily unavailable"
+            : "Loading session chart…"}
+        </div>
+      )}
+    </div>
+  );
+}
 export default function Board() {
   const [quotes, setQuotes] = useState<Quote[]>([]),
+    [clock, setClock] = useState<Date | null>(null),
+    [chartPoints, setChartPoints] = useState<ChartPoint[]>([]),
+    [chartUnavailable, setChartUnavailable] = useState(false),
     [mode, setMode] = useState<Mode>("connecting"),
     [lastTick, setLastTick] = useState<Date | null>(null),
     [fullscreen, setFullscreen] = useState(false),
@@ -204,12 +309,62 @@ export default function Board() {
       document.removeEventListener("fullscreenchange", full);
     };
   }, [toggleFullscreen]);
-  const gainers = quotes
-    .filter((q) => change(q) >= 0)
-    .sort((a, b) => change(b) - change(a));
-  const losers = quotes
-    .filter((q) => change(q) < 0)
-    .sort((a, b) => change(a) - change(b));
+  useEffect(() => {
+    setClock(new Date());
+    const timer = setInterval(() => setClock(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  useEffect(() => {
+    let active = true;
+    const update = async () => {
+      try {
+        const response = await fetch("/api/chart", {
+          cache: "no-store",
+          signal: AbortSignal.timeout(15000),
+        });
+        if (!response.ok) throw new Error("Chart unavailable");
+        const data = await response.json();
+        if (active) {
+          setChartPoints(data.points);
+          setChartUnavailable(false);
+        }
+      } catch {
+        if (active) setChartUnavailable(true);
+      }
+    };
+    update();
+    const timer = setInterval(update, 60000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, []);
+  const order = [
+    "EUR_USD",
+    "USD_JPY",
+    "GBP_USD",
+    "USD_CHF",
+    "AUD_USD",
+    "USD_CAD",
+    "NZD_USD",
+    "EUR_GBP",
+    "EUR_JPY",
+    "GBP_JPY",
+    "EUR_CHF",
+    "AUD_JPY",
+    "AUD_NZD",
+    "XAU_USD",
+    "BCO_USD",
+    "WTICO_USD",
+  ];
+  const ordered = [...quotes].sort(
+    (a, b) => order.indexOf(a.symbol) - order.indexOf(b.symbol),
+  );
+  const columns = [
+    ordered.slice(0, 6),
+    ordered.slice(6, 11),
+    ordered.slice(11),
+  ];
   const marketClosed =
     quotes.length > 0 && quotes.every((q) => q.tradeable === false);
   const feedStatus =
@@ -227,52 +382,67 @@ export default function Board() {
           {error}
         </div>
       )}
-      <section className="split-board" aria-label="Market prices">
-        {[
-          { title: "GAINERS", data: gainers, positive: true },
-          { title: "LOSERS", data: losers, positive: false },
-        ].map((side) => (
-          <div
-            className={`board-side ${side.positive ? "gaining" : "losing"}`}
-            key={side.title}
+      <section
+        className="exchange-board"
+        aria-label="Forex and commodities market prices"
+      >
+        {columns.map((column, index) => (
+          <section
+            className={`quote-column column-${index}`}
+            key={index}
+            aria-label={`Market column ${index + 1}`}
           >
-            <div className="side-heading">
-              <div>
-                {side.positive ? (
-                  <ArrowUpRight size={20} />
-                ) : (
-                  <ArrowDownRight size={20} />
-                )}
-                <h2>{side.title}</h2>
-                <span className="count">
-                  {String(side.data.length).padStart(2, "0")}
+            {index === 0 && <div className="board-spacer" aria-hidden="true" />}
+            {index === 1 && (
+              <div className="center-heading">
+                <div className="exchange-clock">
+                  {clock
+                    ? clock.toLocaleTimeString("en-GB", {
+                        timeZone: "America/New_York",
+                      })
+                    : "--:--:--"}
+                  <small>ET</small>
+                </div>
+                <div className="exchange-date">
+                  {clock
+                    ? clock.toLocaleDateString("en-US", {
+                        timeZone: "America/New_York",
+                        weekday: "long",
+                        month: "long",
+                        day: "numeric",
+                        year: "numeric",
+                      })
+                    : " "}
+                </div>
+                <SessionChart
+                  points={chartPoints}
+                  unavailable={chartUnavailable}
+                />
+              </div>
+            )}
+            {index === 2 && (
+              <div className="exchange-brand">
+                TAFOREX
+                <span className="brand-mark" aria-hidden="true">
+                  <i />
+                  <i />
+                  <i />
                 </span>
               </div>
-            </div>
-            <div className="column-labels">
-              <span>#</span>
-              <span>INSTRUMENT</span>
-              <span>LAST PRICE</span>
-              <span title="Change from the previous OANDA session close (17:00 New York)">
-                CHANGE %
-              </span>
-            </div>
-            <div className="rows">
-              {side.data.length ? (
-                side.data.map((q, i) => (
-                  <MarketRow q={q} rank={i + 1} key={q.symbol} />
-                ))
-              ) : (
+            )}
+            <div className="quote-list">
+              {column.map((q) => (
+                <MarketRow q={q} key={q.symbol} />
+              ))}
+              {!quotes.length && (
                 <div className="empty-state">
                   {mode === "connecting"
-                    ? "Connecting to OANDA…"
-                    : mode === "reconnecting" && !quotes.length
-                      ? "Waiting for OANDA prices…"
-                      : `No ${side.title.toLowerCase()} to display.`}
+                    ? "Connecting…"
+                    : "Waiting for prices…"}
                 </div>
               )}
             </div>
-          </div>
+          </section>
         ))}
       </section>
       <div

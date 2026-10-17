@@ -280,3 +280,51 @@ test("New York session keys track the 17:00 rollover across daylight saving chan
   assert.equal(session.sessionKey("2026-11-02T21:59:59Z"), "2026-11-01");
   assert.equal(session.sessionKey("2026-11-02T22:00:00Z"), "2026-11-02");
 });
+
+test("header chart returns real candle closes for the latest session only", async () => {
+  const route = load("../app/api/chart/route.ts", {
+    process: {
+      env: { OANDA_API_TOKEN: "chart-secret", OANDA_ENVIRONMENT: "practice" },
+    },
+    require: (name) => (name === "@/lib/session" ? session : require(name)),
+    fetch: async (url, options) => {
+      assert.match(
+        url,
+        /api-fxpractice\.oanda\.com\/v3\/instruments\/EUR_USD\/candles\?count=288&granularity=M5&price=M/,
+      );
+      assert.equal(options.headers.Authorization, "Bearer chart-secret");
+      return Response.json({
+        candles: [
+          { time: "2026-10-15T20:55:00Z", mid: { c: "1.10" } },
+          { time: "2026-10-15T21:00:00Z", mid: { c: "1.11" } },
+          { time: "2026-10-16T20:55:00Z", mid: { c: "1.12" } },
+        ],
+      });
+    },
+  });
+  const response = await route.GET();
+  assert.equal(response.status, 200);
+  const text = await response.text();
+  assert.ok(!text.includes("chart-secret"));
+  const data = JSON.parse(text);
+  assert.equal(data.symbol, "EUR_USD");
+  assert.equal(data.interval, "M5");
+  assert.equal(data.points.length, 2);
+  assert.equal(data.points[0].price, 1.11);
+  assert.equal(data.points[1].price, 1.12);
+});
+
+test("header chart reports upstream failure without inventing a price series", async () => {
+  const route = load("../app/api/chart/route.ts", {
+    process: {
+      env: { OANDA_API_TOKEN: "chart-secret", OANDA_ENVIRONMENT: "practice" },
+    },
+    require: (name) => (name === "@/lib/session" ? session : require(name)),
+    fetch: async () => new Response("", { status: 401 }),
+  });
+  const response = await route.GET();
+  assert.equal(response.status, 502);
+  const body = await response.json();
+  assert.equal(body.points, undefined);
+  assert.ok(!JSON.stringify(body).includes("chart-secret"));
+});
