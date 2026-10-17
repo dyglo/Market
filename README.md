@@ -28,6 +28,7 @@ The backend uses read-only OANDA endpoints and never exposes server credentials 
 ## Validation
 
 ```sh
+npm test
 npm run typecheck
 npm run build
 ```

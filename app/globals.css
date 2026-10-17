@@ -1342,3 +1342,44 @@ form input::placeholder {
     font-size: 17px;
   }
 }
+@media (max-width: 420px) {
+  .column-labels,
+  .market-row {
+    grid-template-columns: 14px minmax(86px, 1fr) 88px 65px;
+    gap: 5px;
+    padding: 0 12px;
+  }
+  .symbol {
+    font-size: 11px;
+  }
+  .instrument-name {
+    font-size: 7px;
+  }
+  .price,
+  .row-change {
+    font-size: 14px;
+  }
+  .side-heading {
+    padding: 0 14px;
+  }
+  .side-heading > span {
+    font-size: 6px;
+  }
+  .side-bottom {
+    padding: 0 12px;
+    font-size: 6px;
+  }
+  .terminal-tools {
+    gap: 4px;
+  }
+  .terminal-tools button {
+    padding: 5px;
+  }
+  .feed-badge {
+    font-size: 6px;
+  }
+  .brand {
+    gap: 7px;
+    font-size: 15px;
+  }
+}
