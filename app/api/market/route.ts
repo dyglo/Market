@@ -1,12 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { INITIAL } from "@/lib/market";
+import { previousSessionClose, sessionKey } from "@/lib/session";
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 const headers = {
   "Cache-Control": "no-store, private",
   "X-Content-Type-Options": "nosniff",
 };
-const opens = new Map<string, { open: number; expires: number }>();
+const previousCloses = new Map<
+  string,
+  {
+    close: number;
+    previousSessionStart: string;
+    session: string;
+    expires: number;
+  }
+>();
 async function prices(request: NextRequest, manual: boolean) {
   if (manual) {
     const origin = request.headers.get("origin");
@@ -109,31 +118,34 @@ async function prices(request: NextRequest, manual: boolean) {
         const price = (Number(p.bids[0].price) + Number(p.asks[0].price)) / 2;
         if (!Number.isFinite(price) || price <= 0)
           throw new Error("OANDA returned an invalid price.");
-        const key = `${environment}:${q.symbol}`,
-          cached = opens.get(key);
-        let open = cached?.open;
-        if (!cached || cached.expires < Date.now()) {
+        const session = sessionKey(p.time);
+        const key = `${environment}:${q.symbol}`;
+        let reference = previousCloses.get(key);
+        if (
+          !reference ||
+          reference.expires <= Date.now() ||
+          reference.session !== session
+        ) {
           const candles = await get(
-            `instruments/${q.symbol}/candles?count=2&granularity=D&price=M&dailyAlignment=0&alignmentTimezone=UTC`,
+            `instruments/${q.symbol}/candles?count=5&granularity=D&price=M&smooth=false&dailyAlignment=17&alignmentTimezone=America%2FNew_York`,
           );
-          const daily = candles.candles?.at(-1);
-          open = Number(daily?.mid?.o);
-          if (!Number.isFinite(open) || !open)
-            throw new Error(
-              "Daily reference prices are currently unavailable.",
-            );
-          opens.set(key, {
-            open,
-            expires: Math.min(
-              Date.now() + 60000,
-              new Date().setUTCHours(24, 0, 0, 0),
+          reference = {
+            ...previousSessionClose(
+              candles.candles || [],
+              p.time,
+              p.tradeable === true,
             ),
-          });
+            session,
+            expires: Date.now() + 60000,
+          };
+          previousCloses.set(key, reference);
         }
         return {
           ...q,
           price,
-          open,
+          previousClose: reference.close,
+          priceTime: p.time,
+          previousSessionStart: reference.previousSessionStart,
           history: Array(32).fill(price),
           tick: 0,
           tradeable: p.tradeable,
@@ -148,6 +160,9 @@ async function prices(request: NextRequest, manual: boolean) {
       {
         quotes: quotes.filter(Boolean),
         environment,
+        changeBasis: "previous-session-close",
+        sessionTimezone: "America/New_York",
+        sessionAlignment: 17,
         time: new Date().toISOString(),
       },
       { headers },

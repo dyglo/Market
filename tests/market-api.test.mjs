@@ -28,11 +28,17 @@ function load(file, overrides = {}) {
   return module.exports;
 }
 const market = load("../lib/market.ts");
+const session = load("../lib/session.ts");
 function api(fetch, env = {}) {
   return load("../app/api/market/route.ts", {
     fetch,
     process: { env },
-    require: (name) => (name === "@/lib/market" ? market : require(name)),
+    require: (name) =>
+      name === "@/lib/market"
+        ? market
+        : name === "@/lib/session"
+          ? session
+          : require(name),
   });
 }
 const post = (body) =>
@@ -80,7 +86,7 @@ test("malformed credentials and foreign origins are rejected before calling OAND
   });
   assert.equal((await route.POST(request)).status, 403);
 });
-test("OANDA midpoint and UTC daily baseline replace simulation with only available instruments", async () => {
+test("OANDA midpoint and previous-session close replace simulation with only available instruments", async () => {
   const calls = [];
   const route = api(async (url, options) => {
     calls.push(url);
@@ -88,13 +94,30 @@ test("OANDA midpoint and UTC daily baseline replace simulation with only availab
     assert.ok(url.startsWith("https://api-fxpractice.oanda.com/v3/"));
     let body;
     if (url.includes("/instruments/")) {
-      assert.match(url, /dailyAlignment=0&alignmentTimezone=UTC/);
-      body = { candles: [{ mid: { o: "1.10000" } }] };
+      assert.match(
+        url,
+        /dailyAlignment=17&alignmentTimezone=America%2FNew_York/,
+      );
+      body = {
+        candles: [
+          {
+            time: "2026-10-14T21:00:00Z",
+            complete: true,
+            mid: { o: "1.08", c: "1.10000" },
+          },
+          {
+            time: "2026-10-15T21:00:00Z",
+            complete: false,
+            mid: { o: "1.10500", c: "1.11010" },
+          },
+        ],
+      };
     } else if (url.includes("/pricing?"))
       body = {
         prices: [
           {
             instrument: "EUR_USD",
+            time: "2026-10-16T14:00:00Z",
             bids: [{ price: "1.11000" }],
             asks: [{ price: "1.11020" }],
             tradeable: true,
@@ -112,7 +135,7 @@ test("OANDA midpoint and UTC daily baseline replace simulation with only availab
   const data = JSON.parse(text);
   assert.equal(data.quotes.length, 1);
   assert.equal(data.quotes[0].symbol, "EUR_USD");
-  assert.equal(data.quotes[0].open, 1.1);
+  assert.equal(data.quotes[0].previousClose, 1.1);
   assert.ok(Math.abs(data.quotes[0].price - 1.1101) < 1e-10);
   assert.ok(Math.abs(market.change(data.quotes[0]) - 0.9181818) < 0.00001);
   await route.POST(post(settings));
@@ -133,12 +156,26 @@ test("server environment connects to OANDA and preserves closed-market prices", 
       assert.equal(options.headers.Authorization, "Bearer server-only-token");
       assert.ok(url.startsWith("https://api-fxtrade.oanda.com/v3/"));
       if (url.includes("/candles"))
-        return Response.json({ candles: [{ mid: { o: "4100" } }] });
+        return Response.json({
+          candles: [
+            {
+              time: "2026-10-14T21:00:00Z",
+              complete: true,
+              mid: { o: "4090", c: "4100" },
+            },
+            {
+              time: "2026-10-15T21:00:00Z",
+              complete: true,
+              mid: { o: "4156.04", c: "4165.4" },
+            },
+          ],
+        });
       if (url.includes("/pricing?"))
         return Response.json({
           prices: [
             {
               instrument: "XAU_USD",
+              time: "2026-10-16T20:59:59Z",
               bids: [{ price: "4165.3" }],
               asks: [{ price: "4165.5" }],
               tradeable: false,
@@ -164,5 +201,82 @@ test("server environment connects to OANDA and preserves closed-market prices", 
   assert.equal(data.quotes.length, 1);
   assert.equal(data.quotes[0].tradeable, false);
   assert.equal(data.quotes[0].price, 4165.4);
-  assert.equal(data.quotes[0].open, 4100);
+  assert.equal(data.quotes[0].previousClose, 4100);
+});
+
+const fridayCandles = [
+  { time: "2026-10-14T21:00:00Z", complete: true, mid: { o: "98", c: "100" } },
+  { time: "2026-10-15T21:00:00Z", complete: true, mid: { o: "102", c: "105" } },
+];
+test("weekend change uses Thursday close, rather than Friday close or Friday open", () => {
+  const reference = session.previousSessionClose(
+    fridayCandles,
+    "2026-10-16T20:59:59Z",
+    false,
+  );
+  assert.equal(reference.close, 100);
+  assert.equal(reference.previousSessionStart, "2026-10-14T21:00:00Z");
+  assert.ok(
+    Math.abs(
+      market.change({ price: 105, previousClose: reference.close }) - 5,
+    ) < 1e-10,
+  );
+});
+test("Sunday reopening includes the weekend gap against Friday close", () => {
+  const candles = [
+    ...fridayCandles,
+    {
+      time: "2026-10-18T21:00:00Z",
+      complete: false,
+      mid: { o: "110", c: "111" },
+    },
+  ];
+  const reference = session.previousSessionClose(
+    candles,
+    "2026-10-18T22:00:00Z",
+    true,
+  );
+  assert.equal(reference.close, 105);
+  assert.ok(
+    Math.abs(
+      market.change({ price: 111, previousClose: reference.close }) - 5.7142857,
+    ) < 1e-6,
+  );
+});
+test("live session rollover uses the last close while waiting for a new candle", () => {
+  assert.equal(
+    session.previousSessionClose(fridayCandles, "2026-10-18T21:00:01Z", true)
+      .close,
+    105,
+  );
+});
+test("future candles and incomplete baseline candles are excluded", () => {
+  const future = {
+    time: "2026-10-18T21:00:00Z",
+    complete: false,
+    mid: { c: "110" },
+  };
+  assert.equal(
+    session.previousSessionClose(
+      [...fridayCandles, future],
+      "2026-10-16T20:59:59Z",
+      false,
+    ).close,
+    100,
+  );
+  assert.throws(
+    () =>
+      session.previousSessionClose(
+        [fridayCandles[1]],
+        "2026-10-16T20:59:59Z",
+        false,
+      ),
+    /closing prices are currently unavailable/,
+  );
+});
+test("New York session keys track the 17:00 rollover across daylight saving changes", () => {
+  assert.equal(session.sessionKey("2026-10-16T20:59:59Z"), "2026-10-15");
+  assert.equal(session.sessionKey("2026-10-16T21:00:00Z"), "2026-10-16");
+  assert.equal(session.sessionKey("2026-11-02T21:59:59Z"), "2026-11-01");
+  assert.equal(session.sessionKey("2026-11-02T22:00:00Z"), "2026-11-02");
 });

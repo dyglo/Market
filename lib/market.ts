@@ -4,7 +4,9 @@ export type Quote = {
   name: string;
   category: Category;
   price: number;
-  open: number;
+  previousClose: number;
+  priceTime?: string;
+  previousSessionStart?: string;
   digits: number;
   history: number[];
   tick: number;
@@ -41,7 +43,7 @@ export const INITIAL: Quote[] = instruments.map(
     name,
     category,
     price,
-    open: price / (1 + pct / 100),
+    previousClose: price / (1 + pct / 100),
     digits,
     tick: 0,
     history: Array.from(
@@ -54,7 +56,7 @@ export const INITIAL: Quote[] = instruments.map(
     ),
   }),
 );
-export const change = (q: Quote) => (q.price / q.open - 1) * 100;
+export const change = (q: Quote) => (q.price / q.previousClose - 1) * 100;
 export const displaySymbol = (s: string) =>
   s === "XAU_USD"
     ? "XAU / USD"

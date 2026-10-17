@@ -340,7 +340,9 @@ export default function Board() {
               <span>#</span>
               <span>INSTRUMENT</span>
               <span>LAST PRICE</span>
-              <span>CHANGE %</span>
+              <span title="Change from the previous OANDA session close (17:00 New York)">
+                CHANGE %
+              </span>
             </div>
             <div className="rows">
               {side.data.length ? (
