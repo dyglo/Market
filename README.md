@@ -11,11 +11,11 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:3000. Press **F** for native fullscreen, **S** for connection settings, and **Escape** to close settings or exit fullscreen. The mouse cursor hides after 3.5 seconds of inactivity. Market filters are available inside settings. Reduced-motion preferences disable animations.
+Open http://localhost:3000. Press **F** for native fullscreen and **Escape** to exit fullscreen. The mouse cursor hides after 3.5 seconds of inactivity. Reduced-motion preferences disable animations.
 
 ## OANDA
 
-On startup the board checks the server connection before showing prices. If server credentials are absent, clearly labelled simulation starts; demo prices are illustrative, not current market quotes. Server configuration is checked again every 15 seconds until connected. Configured connections that fail show the error and retry without generating mock prices. Open settings to connect a practice/live account. Credentials entered here stay in React memory and travel only to the same-origin backend, then to the selected OANDA API. They are never written to local/session storage, cookies or files, and clear on reload. Always serve over HTTPS.
+On startup the board checks the server connection before showing prices. If server credentials are absent, clearly labelled simulation starts; demo prices are illustrative, not current market quotes. Server configuration is checked again every 15 seconds until connected. Configured connections that fail show the error and retry without generating mock prices. The board connects automatically using server-side Vercel environment variables. There are no credential inputs or settings controls in the browser. Always serve over HTTPS.
 
 For an unattended display, configure server environment variables in Vercel and redeploy:
 

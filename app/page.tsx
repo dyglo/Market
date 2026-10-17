@@ -1,29 +1,7 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  ArrowDownRight,
-  ArrowUpRight,
-  Check,
-  Expand,
-  LockKeyhole,
-  Settings2,
-  ShieldCheck,
-  Unplug,
-  X,
-} from "lucide-react";
-import {
-  Category,
-  Quote,
-  INITIAL,
-  change,
-  displaySymbol,
-  money,
-} from "@/lib/market";
-type Credentials = {
-  accountId: string;
-  token: string;
-  environment: "practice" | "live";
-};
+import { ArrowDownRight, ArrowUpRight, Expand } from "lucide-react";
+import { Quote, INITIAL, change, displaySymbol, money } from "@/lib/market";
 type Mode = "connecting" | "simulation" | "oanda" | "reconnecting";
 function MarketRow({ q, rank }: { q: Quote; rank: number }) {
   const positive = change(q) >= 0;
@@ -60,24 +38,13 @@ function MarketRow({ q, rank }: { q: Quote; rank: number }) {
 }
 export default function Board() {
   const [quotes, setQuotes] = useState<Quote[]>([]),
-    [filter, setFilter] = useState<Category | "ALL">("ALL"),
     [mode, setMode] = useState<Mode>("connecting"),
     [lastTick, setLastTick] = useState<Date | null>(null),
-    [modal, setModal] = useState(false),
     [fullscreen, setFullscreen] = useState(false),
     [idle, setIdle] = useState(false),
     [error, setError] = useState(""),
-    [busy, setBusy] = useState(false),
-    [environment, setEnvironment] = useState<"practice" | "live">("practice"),
-    [accountId, setAccountId] = useState(""),
-    [token, setToken] = useState(""),
     [sourceEnvironment, setSourceEnvironment] = useState("practice");
-  const credentials = useRef<Credentials | null>(null),
-    connected = useRef(false),
-    dialog = useRef<HTMLDialogElement>(null),
-    opener = useRef<HTMLButtonElement>(null),
-    requestId = useRef(0),
-    serverEnabled = useRef(true),
+  const connected = useRef(false),
     simulating = useRef(false);
   const applyQuotes = useCallback(
     (data: { quotes: Quote[]; environment: string }) => {
@@ -102,11 +69,8 @@ export default function Board() {
     },
     [],
   );
-  const fetchPrices = useCallback(async (c: Credentials | null) => {
+  const fetchPrices = useCallback(async () => {
     const res = await fetch("/api/market", {
-      method: c ? "POST" : "GET",
-      headers: c ? { "Content-Type": "application/json" } : undefined,
-      body: c ? JSON.stringify(c) : undefined,
       cache: "no-store",
       signal: AbortSignal.timeout(20000),
     });
@@ -122,17 +86,15 @@ export default function Board() {
     let active = true;
     let retry: ReturnType<typeof setTimeout>;
     const attempt = async () => {
-      if (!serverEnabled.current || connected.current) return;
-      const id = requestId.current;
+      if (connected.current) return;
       try {
-        const data = await fetchPrices(null);
-        if (active && id === requestId.current && serverEnabled.current) {
+        const data = await fetchPrices();
+        if (active) {
           applyQuotes(data);
           setError("");
         }
       } catch (failure) {
-        if (!active || id !== requestId.current || !serverEnabled.current)
-          return;
+        if (!active) return;
         if ((failure as { code?: string }).code === "NOT_CONFIGURED") {
           if (!simulating.current) setQuotes(INITIAL);
           simulating.current = true;
@@ -149,8 +111,7 @@ export default function Board() {
           );
         }
       }
-      if (active && !connected.current && serverEnabled.current)
-        retry = setTimeout(attempt, 15000);
+      if (active && !connected.current) retry = setTimeout(attempt, 15000);
     };
     attempt();
     return () => {
@@ -185,15 +146,14 @@ export default function Board() {
     const timer = setInterval(async () => {
       if (pending) return;
       pending = true;
-      const id = requestId.current;
       try {
-        const data = await fetchPrices(credentials.current);
-        if (active && id === requestId.current) {
+        const data = await fetchPrices();
+        if (active) {
           applyQuotes(data);
           setError("");
         }
       } catch {
-        if (active && id === requestId.current) {
+        if (active) {
           setMode("reconnecting");
           setError(
             "Price feed interrupted. Showing last received prices; retrying automatically.",
@@ -227,11 +187,10 @@ export default function Board() {
     };
     const key = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement).matches("input,select,textarea")) return;
-      if (e.key.toLowerCase() === "f" && !modal) {
+      if (e.key.toLowerCase() === "f") {
         e.preventDefault();
         toggleFullscreen();
       }
-      if (e.key.toLowerCase() === "s") setModal(true);
     };
     const full = () => setFullscreen(Boolean(document.fullscreenElement));
     move();
@@ -244,59 +203,13 @@ export default function Board() {
       window.removeEventListener("keydown", key);
       document.removeEventListener("fullscreenchange", full);
     };
-  }, [modal, toggleFullscreen]);
-  useEffect(() => {
-    if (modal) dialog.current?.showModal();
-    else if (dialog.current?.open) {
-      dialog.current.close();
-      setToken("");
-      opener.current?.focus();
-    }
-  }, [modal]);
-  const connect = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setBusy(true);
-    setError("");
-    const id = ++requestId.current;
-    try {
-      const c = {
-        accountId: accountId.trim(),
-        token: token.trim(),
-        environment,
-      };
-      const data = await fetchPrices(c);
-      if (id !== requestId.current) return;
-      serverEnabled.current = false;
-      credentials.current = c;
-      applyQuotes(data);
-      setToken("");
-      setModal(false);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Connection failed.");
-    } finally {
-      setBusy(false);
-    }
-  };
-  const simulate = () => {
-    requestId.current++;
-    serverEnabled.current = false;
-    simulating.current = true;
-    credentials.current = null;
-    connected.current = false;
-    setMode("simulation");
-    setQuotes(INITIAL);
-    setError("");
-    setModal(false);
-  };
-  const visible = quotes.filter(
-      (q) => filter === "ALL" || q.category === filter,
-    ),
-    gainers = visible
-      .filter((q) => change(q) >= 0)
-      .sort((a, b) => change(b) - change(a)),
-    losers = visible
-      .filter((q) => change(q) < 0)
-      .sort((a, b) => change(a) - change(b));
+  }, [toggleFullscreen]);
+  const gainers = quotes
+    .filter((q) => change(q) >= 0)
+    .sort((a, b) => change(b) - change(a));
+  const losers = quotes
+    .filter((q) => change(q) < 0)
+    .sort((a, b) => change(a) - change(b));
   const marketClosed =
     quotes.length > 0 && quotes.every((q) => q.tradeable === false);
   const feedStatus =
@@ -308,8 +221,8 @@ export default function Board() {
           ? "OANDA · RECONNECTING"
           : `OANDA · ${sourceEnvironment.toUpperCase()}${marketClosed ? " · MARKET CLOSED" : ""}`;
   return (
-    <main className={`terminal ${idle && !modal ? "cursor-hidden" : ""}`}>
-      {error && !modal && (
+    <main className={`terminal ${idle ? "cursor-hidden" : ""}`}>
+      {error && (
         <div className="feed-error" role="status">
           {error}
         </div>
@@ -355,7 +268,7 @@ export default function Board() {
                     ? "Connecting to OANDA…"
                     : mode === "reconnecting" && !quotes.length
                       ? "Waiting for OANDA prices…"
-                      : `No ${side.title.toLowerCase()} in this category.`}
+                      : `No ${side.title.toLowerCase()} to display.`}
                 </div>
               )}
             </div>
@@ -381,128 +294,7 @@ export default function Board() {
         >
           <Expand size={16} />
         </button>
-        <button
-          ref={opener}
-          onClick={() => setModal(true)}
-          title="Settings (S)"
-          aria-label="Open settings"
-        >
-          <Settings2 size={16} />
-        </button>
       </div>
-      <dialog
-        ref={dialog}
-        aria-label="OANDA connection settings"
-        className="settings-modal"
-        onCancel={() => setModal(false)}
-        onClick={(e) => {
-          if (e.target === dialog.current) setModal(false);
-        }}
-      >
-        <div className="modal-inner">
-          <button
-            className="close-modal"
-            aria-label="Close settings"
-            onClick={() => setModal(false)}
-          >
-            <X size={20} />
-          </button>
-          <h2>OANDA settings</h2>
-          <p className="connection-status">{feedStatus}</p>
-          {error && (
-            <div className="form-error" role="status">
-              {error}
-            </div>
-          )}
-          <label className="filter-label" htmlFor="market-filter">
-            DISPLAY
-          </label>
-          <select
-            id="market-filter"
-            value={filter}
-            onChange={(e) => setFilter(e.target.value as Category | "ALL")}
-          >
-            <option value="ALL">All markets</option>
-            <option value="FX">Forex</option>
-            <option value="GOLD">Gold</option>
-            <option value="OIL">Crude oil</option>
-          </select>
-          <div className="security-note">
-            <ShieldCheck size={17} />
-            <span>
-              Read-only connection. Your token is never saved in browser
-              storage. Session credentials clear on reload.
-            </span>
-          </div>
-          <form onSubmit={connect}>
-            <label>ENVIRONMENT</label>
-            <div className="environment-toggle">
-              {(["practice", "live"] as const).map((env) => (
-                <button
-                  type="button"
-                  key={env}
-                  onClick={() => setEnvironment(env)}
-                  className={environment === env ? "selected" : ""}
-                >
-                  {environment === env && <Check size={13} />}{" "}
-                  {env === "practice" ? "Practice" : "Live"}
-                </button>
-              ))}
-            </div>
-            <label htmlFor="account">ACCOUNT ID</label>
-            <input
-              id="account"
-              value={accountId}
-              onChange={(e) => setAccountId(e.target.value)}
-              placeholder="001-001-1234567-001"
-              required
-              autoComplete="off"
-              maxLength={100}
-            />
-            <label htmlFor="token">
-              API ACCESS TOKEN <LockKeyhole size={11} />
-            </label>
-            <input
-              id="token"
-              type="password"
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-              placeholder="Enter your personal access token"
-              required
-              autoComplete="off"
-              maxLength={300}
-            />
-            {error && (
-              <div className="form-error" role="alert">
-                {error}
-              </div>
-            )}
-            <button className="connect-button" disabled={busy} type="submit">
-              {busy ? "Connecting…" : "Connect to OANDA"}
-              <ArrowUpRight size={16} />
-            </button>
-          </form>
-          <button className="demo-button" onClick={simulate}>
-            <Unplug size={14} /> Use simulated data
-          </button>
-          <div className="server-note">
-            <LockKeyhole size={12} />
-            <p>
-              For an always-on display, add <code>OANDA_ACCOUNT_ID</code>,{" "}
-              <code>OANDA_API_TOKEN</code> and <code>OANDA_ENVIRONMENT</code> in{" "}
-              <a
-                href="https://vercel.com/next-q/ticker-market-board/settings/environment-variables"
-                target="_blank"
-                rel="noreferrer"
-              >
-                Vercel settings ↗
-              </a>
-              , then redeploy. Server credentials are never sent to this
-              browser.
-            </p>
-          </div>
-        </div>
-      </dialog>
     </main>
   );
 }
