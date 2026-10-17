@@ -1,8 +1,15 @@
 import { NextResponse } from "next/server";
+import { INITIAL } from "@/lib/market";
 import { sessionKey } from "@/lib/session";
 export const dynamic = "force-dynamic";
 const headers = { "Cache-Control": "no-store, private" };
-export async function GET() {
+export async function GET(request: Request) {
+  const symbol = new URL(request.url).searchParams.get("symbol") || "EUR_USD";
+  if (!INITIAL.some((q) => q.symbol === symbol))
+    return NextResponse.json(
+      { error: "Unsupported chart instrument." },
+      { status: 400, headers },
+    );
   const token = process.env.OANDA_API_TOKEN;
   if (!token)
     return NextResponse.json(
@@ -21,7 +28,7 @@ export async function GET() {
       : "https://api-fxpractice.oanda.com";
   try {
     const response = await fetch(
-      `${host}/v3/instruments/EUR_USD/candles?count=288&granularity=M5&price=M`,
+      `${host}/v3/instruments/${symbol}/candles?count=288&granularity=M5&price=M`,
       {
         headers: { Authorization: `Bearer ${token}` },
         cache: "no-store",
@@ -45,7 +52,7 @@ export async function GET() {
     const session = sessionKey(candles.at(-1).time);
     return NextResponse.json(
       {
-        symbol: "EUR_USD",
+        symbol,
         interval: "M5",
         points: candles.filter(
           (c: { time: string }) => sessionKey(c.time) === session,

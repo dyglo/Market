@@ -70,3 +70,13 @@ export const money = (q: Quote) =>
     minimumFractionDigits: q.digits,
     maximumFractionDigits: q.digits,
   });
+
+export function topMovers(quotes: Quote[]) {
+  let gainer: Quote | undefined, loser: Quote | undefined;
+  for (const quote of quotes) {
+    const pct = change(quote);
+    if (pct > 0 && (!gainer || pct > change(gainer))) gainer = quote;
+    if (pct < 0 && (!loser || pct < change(loser))) loser = quote;
+  }
+  return { gainer, loser };
+}

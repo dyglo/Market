@@ -22,6 +22,7 @@ function load(file, overrides = {}) {
     exports: module.exports,
     require,
     AbortSignal,
+    URL,
     process: { env: {} },
     ...overrides,
   });
@@ -286,7 +287,12 @@ test("header chart returns real candle closes for the latest session only", asyn
     process: {
       env: { OANDA_API_TOKEN: "chart-secret", OANDA_ENVIRONMENT: "practice" },
     },
-    require: (name) => (name === "@/lib/session" ? session : require(name)),
+    require: (name) =>
+      name === "@/lib/session"
+        ? session
+        : name === "@/lib/market"
+          ? market
+          : require(name),
     fetch: async (url, options) => {
       assert.match(
         url,
@@ -302,7 +308,9 @@ test("header chart returns real candle closes for the latest session only", asyn
       });
     },
   });
-  const response = await route.GET();
+  const response = await route.GET(
+    new NextRequest("https://ticker.test/api/chart"),
+  );
   assert.equal(response.status, 200);
   const text = await response.text();
   assert.ok(!text.includes("chart-secret"));
@@ -319,12 +327,75 @@ test("header chart reports upstream failure without inventing a price series", a
     process: {
       env: { OANDA_API_TOKEN: "chart-secret", OANDA_ENVIRONMENT: "practice" },
     },
-    require: (name) => (name === "@/lib/session" ? session : require(name)),
+    require: (name) =>
+      name === "@/lib/session"
+        ? session
+        : name === "@/lib/market"
+          ? market
+          : require(name),
     fetch: async () => new Response("", { status: 401 }),
   });
-  const response = await route.GET();
+  const response = await route.GET(
+    new NextRequest("https://ticker.test/api/chart"),
+  );
   assert.equal(response.status, 502);
   const body = await response.json();
   assert.equal(body.points, undefined);
   assert.ok(!JSON.stringify(body).includes("chart-secret"));
+});
+
+test("chart accepts a supported commodity symbol and requests that exact instrument", async () => {
+  const route = load("../app/api/chart/route.ts", {
+    process: {
+      env: { OANDA_API_TOKEN: "chart-secret", OANDA_ENVIRONMENT: "practice" },
+    },
+    require: (name) =>
+      name === "@/lib/session"
+        ? session
+        : name === "@/lib/market"
+          ? market
+          : require(name),
+    fetch: async (url) => {
+      assert.match(url, /instruments\/BCO_USD\/candles/);
+      return Response.json({
+        candles: [{ time: "2026-10-16T20:55:00Z", mid: { c: "111.647" } }],
+      });
+    },
+  });
+  const response = await route.GET(
+    new NextRequest("https://ticker.test/api/chart?symbol=BCO_USD"),
+  );
+  assert.equal(response.status, 200);
+  const data = await response.json();
+  assert.equal(data.symbol, "BCO_USD");
+  assert.equal(data.points[0].price, 111.647);
+  const invalid = await route.GET(
+    new NextRequest("https://ticker.test/api/chart?symbol=arbitrary_path"),
+  );
+  assert.equal(invalid.status, 400);
+});
+
+test("chart leaders follow daily percentage change and update when leadership changes", () => {
+  const quotes = [
+    { symbol: "A", price: 105, previousClose: 100 },
+    { symbol: "B", price: 98, previousClose: 100 },
+    { symbol: "C", price: 110, previousClose: 100 },
+    { symbol: "D", price: 90, previousClose: 100 },
+  ];
+  let leaders = market.topMovers(quotes);
+  assert.equal(leaders.gainer.symbol, "C");
+  assert.equal(leaders.loser.symbol, "D");
+  quotes[0].price = 120;
+  quotes[1].price = 80;
+  leaders = market.topMovers(quotes);
+  assert.equal(leaders.gainer.symbol, "A");
+  assert.equal(leaders.loser.symbol, "B");
+  assert.equal(
+    market.topMovers(quotes.filter((q) => q.price > 100)).loser,
+    undefined,
+  );
+  assert.equal(
+    market.topMovers(quotes.filter((q) => q.price < 100)).gainer,
+    undefined,
+  );
 });

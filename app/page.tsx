@@ -1,7 +1,15 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Expand } from "lucide-react";
-import { Quote, INITIAL, change, displaySymbol, money } from "@/lib/market";
+import {
+  Quote,
+  INITIAL,
+  change,
+  displaySymbol,
+  money,
+  topMovers,
+} from "@/lib/market";
+import { sessionKey } from "@/lib/session";
 type Mode = "connecting" | "simulation" | "oanda" | "reconnecting";
 type ChartPoint = { time: string; price: number };
 function MarketRow({ q }: { q: Quote }) {
@@ -35,9 +43,13 @@ function MarketRow({ q }: { q: Quote }) {
 function SessionChart({
   points,
   unavailable,
+  quote,
+  role,
 }: {
   points: ChartPoint[];
   unavailable: boolean;
+  quote?: Quote;
+  role: "gainer" | "loser";
 }) {
   const prices = points.map((p) => p.price),
     low = Math.min(...prices),
@@ -51,12 +63,15 @@ function SessionChart({
         `${(i / Math.max(1, points.length - 1)) * 420},${120 - ((p.price - min) / (max - min)) * 116}`,
     )
     .join(" L ");
-  const rising = points.length > 1 && points.at(-1)!.price >= points[0].price;
+  const rising = quote ? change(quote) >= 0 : true;
+  const symbol = quote
+    ? displaySymbol(quote.symbol).replaceAll(" / ", "/")
+    : "";
   const first = points[0],
     last = points.at(-1);
   const label = (p: ChartPoint) =>
     new Date(p.time).toLocaleTimeString("en-US", {
-      timeZone: "America/New_York",
+      timeZone: "Africa/Kampala",
       hour: "2-digit",
       minute: "2-digit",
       hour12: false,
@@ -64,11 +79,15 @@ function SessionChart({
   return (
     <div className={`session-chart ${rising ? "positive" : "negative"}`}>
       <div className="chart-caption">
-        <span>EUR/USD</span>
+        <span>
+          {quote
+            ? `TOP ${role.toUpperCase()} · ${symbol} ${change(quote) >= 0 ? "+" : ""}${change(quote).toFixed(2)}%`
+            : "TOP MOVERS"}
+        </span>
         <span>
           {unavailable && points.length > 1
             ? "5 MIN · LAST RECEIVED"
-            : "5 MIN · NEW YORK"}
+            : "5 MIN · EAT"}
         </span>
       </div>
       {points.length > 1 ? (
@@ -76,14 +95,18 @@ function SessionChart({
           <div className="chart-plot">
             <div className="chart-axis">
               {[max, (max + min) / 2, min].map((v) => (
-                <span key={v}>{v.toFixed(4)}</span>
+                <span key={v}>
+                  {v.toFixed(
+                    quote?.digits === 2 ? 2 : quote?.digits === 3 ? 3 : 4,
+                  )}
+                </span>
               ))}
             </div>
             <svg
               viewBox="0 0 420 124"
               preserveAspectRatio="none"
               role="img"
-              aria-label="EUR/USD intraday price chart from OANDA"
+              aria-label={`${symbol} intraday price chart · top ${role}`}
             >
               <defs>
                 <linearGradient id="chart-fill" x1="0" y1="0" x2="0" y2="1">
@@ -141,14 +164,14 @@ function SessionChart({
 export default function Board() {
   const [quotes, setQuotes] = useState<Quote[]>([]),
     [clock, setClock] = useState<Date | null>(null),
-    [chartPoints, setChartPoints] = useState<ChartPoint[]>([]),
-    [chartUnavailable, setChartUnavailable] = useState(false),
+    [chartSeries, setChartSeries] = useState<
+      Record<string, { points: ChartPoint[]; unavailable: boolean }>
+    >({}),
+    [chartRole, setChartRole] = useState<"gainer" | "loser">("gainer"),
     [mode, setMode] = useState<Mode>("connecting"),
-    [lastTick, setLastTick] = useState<Date | null>(null),
     [fullscreen, setFullscreen] = useState(false),
     [idle, setIdle] = useState(false),
-    [error, setError] = useState(""),
-    [sourceEnvironment, setSourceEnvironment] = useState("practice");
+    [error, setError] = useState("");
   const connected = useRef(false),
     simulating = useRef(false);
   const applyQuotes = useCallback(
@@ -167,8 +190,6 @@ export default function Board() {
           };
         }),
       );
-      setLastTick(new Date());
-      setSourceEnvironment(data.environment);
       setMode("oanda");
       connected.current = true;
     },
@@ -239,7 +260,6 @@ export default function Board() {
             };
           }),
         );
-        setLastTick(new Date());
       }
     }, 1300);
     return () => clearInterval(timer);
@@ -314,31 +334,86 @@ export default function Board() {
     const timer = setInterval(() => setClock(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
+  const movers = topMovers(quotes);
+  const leaderSymbols = [movers.gainer?.symbol, movers.loser?.symbol]
+    .filter(Boolean)
+    .join(",");
   useEffect(() => {
+    const timer = setInterval(
+      () => setChartRole((role) => (role === "gainer" ? "loser" : "gainer")),
+      15000,
+    );
+    return () => clearInterval(timer);
+  }, []);
+  const quoteSession = quotes[0]?.priceTime
+    ? sessionKey(quotes[0].priceTime)
+    : "";
+  useEffect(() => {
+    if (!leaderSymbols || mode === "simulation") return;
     let active = true;
+    const controllers = new Set<AbortController>();
     const update = async () => {
-      try {
-        const response = await fetch("/api/chart", {
-          cache: "no-store",
-          signal: AbortSignal.timeout(15000),
-        });
-        if (!response.ok) throw new Error("Chart unavailable");
-        const data = await response.json();
-        if (active) {
-          setChartPoints(data.points);
-          setChartUnavailable(false);
-        }
-      } catch {
-        if (active) setChartUnavailable(true);
-      }
+      await Promise.all(
+        leaderSymbols.split(",").map(async (symbol) => {
+          const controller = new AbortController();
+          controllers.add(controller);
+          const timeout = setTimeout(() => controller.abort(), 15000);
+          try {
+            const response = await fetch(
+              `/api/chart?symbol=${encodeURIComponent(symbol)}`,
+              { cache: "no-store", signal: controller.signal },
+            );
+            if (!response.ok) throw new Error("Chart unavailable");
+            const data = await response.json();
+            if (active && data.symbol === symbol)
+              setChartSeries((prev) => ({
+                ...prev,
+                [symbol]: { points: data.points, unavailable: false },
+              }));
+          } catch {
+            if (active)
+              setChartSeries((prev) => ({
+                ...prev,
+                [symbol]: {
+                  points: prev[symbol]?.points || [],
+                  unavailable: true,
+                },
+              }));
+          } finally {
+            clearTimeout(timeout);
+            controllers.delete(controller);
+          }
+        }),
+      );
     };
     update();
-    const timer = setInterval(update, 60000);
+    const timer = setInterval(update, 30000);
     return () => {
       active = false;
       clearInterval(timer);
+      controllers.forEach((controller) => controller.abort());
     };
-  }, []);
+  }, [leaderSymbols, mode, quoteSession]);
+  const chartQuote =
+    (chartRole === "gainer" ? movers.gainer : movers.loser) ||
+    movers.gainer ||
+    movers.loser;
+  const displayedRole =
+    chartQuote && change(chartQuote) < 0 ? "loser" : "gainer";
+  const series = chartQuote ? chartSeries[chartQuote.symbol] : undefined;
+  let chartPoints = series?.points || [];
+  if (
+    chartPoints.length &&
+    chartQuote?.priceTime &&
+    mode !== "simulation" &&
+    sessionKey(chartQuote.priceTime) === sessionKey(chartPoints.at(-1)!.time) &&
+    Date.parse(chartQuote.priceTime) >= Date.parse(chartPoints.at(-1)!.time)
+  ) {
+    chartPoints = [
+      ...chartPoints,
+      { time: chartQuote.priceTime, price: chartQuote.price },
+    ];
+  }
   const order = [
     "EUR_USD",
     "USD_JPY",
@@ -365,16 +440,6 @@ export default function Board() {
     ordered.slice(6, 11),
     ordered.slice(11),
   ];
-  const marketClosed =
-    quotes.length > 0 && quotes.every((q) => q.tradeable === false);
-  const feedStatus =
-    mode === "simulation"
-      ? "SIMULATED"
-      : mode === "connecting"
-        ? "CONNECTING TO OANDA"
-        : mode === "reconnecting"
-          ? "OANDA · RECONNECTING"
-          : `OANDA · ${sourceEnvironment.toUpperCase()}${marketClosed ? " · MARKET CLOSED" : ""}`;
   return (
     <main className={`terminal ${idle ? "cursor-hidden" : ""}`}>
       {error && (
@@ -398,15 +463,15 @@ export default function Board() {
                 <div className="exchange-clock">
                   {clock
                     ? clock.toLocaleTimeString("en-GB", {
-                        timeZone: "America/New_York",
+                        timeZone: "Africa/Kampala",
                       })
                     : "--:--:--"}
-                  <small>ET</small>
+                  <small>EAT</small>
                 </div>
                 <div className="exchange-date">
                   {clock
                     ? clock.toLocaleDateString("en-US", {
-                        timeZone: "America/New_York",
+                        timeZone: "Africa/Kampala",
                         weekday: "long",
                         month: "long",
                         day: "numeric",
@@ -416,20 +481,13 @@ export default function Board() {
                 </div>
                 <SessionChart
                   points={chartPoints}
-                  unavailable={chartUnavailable}
+                  unavailable={series?.unavailable || false}
+                  quote={chartQuote}
+                  role={displayedRole}
                 />
               </div>
             )}
-            {index === 2 && (
-              <div className="exchange-brand">
-                TAFOREX
-                <span className="brand-mark" aria-hidden="true">
-                  <i />
-                  <i />
-                  <i />
-                </span>
-              </div>
-            )}
+            {index === 2 && <div className="exchange-brand">TAFOREX</div>}
             <div className="quote-list">
               {column.map((q) => (
                 <MarketRow q={q} key={q.symbol} />
@@ -445,17 +503,11 @@ export default function Board() {
           </section>
         ))}
       </section>
-      <div
-        className="kiosk-status"
-        role="status"
-        title={
-          lastTick
-            ? `Last update ${lastTick.toLocaleTimeString("en-GB", { timeZone: "UTC" })} UTC`
-            : undefined
-        }
-      >
-        {feedStatus}
-      </div>
+      {mode === "simulation" && (
+        <div className="simulation-warning" role="status">
+          SIMULATED DATA
+        </div>
+      )}
       <div className={`kiosk-controls ${idle ? "controls-hidden" : ""}`}>
         <button
           onClick={toggleFullscreen}
